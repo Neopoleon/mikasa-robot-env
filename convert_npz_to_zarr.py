@@ -26,7 +26,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 
-def convert_task(task_dir: str, output_path: str, max_episodes: int = -1):
+def convert_task(task_dir: str, output_path: str, max_episodes: int = -1, use_eef: bool = False):
     npz_files = sorted(Path(task_dir).glob("*.npz"))
     if max_episodes > 0:
         npz_files = npz_files[:max_episodes]
@@ -43,10 +43,17 @@ def convert_task(task_dir: str, output_path: str, max_episodes: int = -1):
         third_person = d["rgb"][..., :3]   # (T, 256, 256, 3)
         wrist_cam = d["rgb"][..., 3:]      # (T, 256, 256, 3)
 
-        # Extract proprio: 7 arm qpos (joints[7:14]) + 1 gripper qpos (joints[14])
-        arm_qpos = d["joints"][:, 7:14]            # (T, 7)
-        gripper_qpos = d["joints"][:, 14:15]        # (T, 1)
-        robot0_8d = np.concatenate([arm_qpos, gripper_qpos], axis=1).astype(np.float32)  # (T, 8)
+        # Extract proprio: joint space or EEF space
+        if use_eef:
+            # tcp_pose(7): 3 pos + 4 quat, + gripper qpos
+            eef_pose = d["joints"][:, 0:7]              # (T, 7)
+            gripper_qpos = d["joints"][:, 14:15]         # (T, 1)
+            robot0_8d = np.concatenate([eef_pose, gripper_qpos], axis=1).astype(np.float32)  # (T, 8)
+        else:
+            # 7 arm qpos + 1 gripper qpos
+            arm_qpos = d["joints"][:, 7:14]              # (T, 7)
+            gripper_qpos = d["joints"][:, 14:15]          # (T, 1)
+            robot0_8d = np.concatenate([arm_qpos, gripper_qpos], axis=1).astype(np.float32)  # (T, 8)
 
         # Action is already 8-dim (7 arm deltas + 1 gripper)
         action0_8d = d["action"].astype(np.float32)  # (T, 8)
@@ -79,6 +86,8 @@ if __name__ == "__main__":
                         help="Task names to convert")
     parser.add_argument("--max-episodes", type=int, default=-1,
                         help="Max episodes to convert per task (-1 for all)")
+    parser.add_argument("--use-eef", action="store_true",
+                        help="Use EEF pose (tcp 3pos+4quat+gripper) instead of joint qpos")
     args = parser.parse_args()
 
     for task in args.tasks:
@@ -89,4 +98,4 @@ if __name__ == "__main__":
         output_path = os.path.join(args.output_dir, task, "episode_data.zarr")
         os.makedirs(args.output_dir, exist_ok=True)
         print(f"\nConverting {task}...")
-        convert_task(task_dir, output_path, max_episodes=args.max_episodes)
+        convert_task(task_dir, output_path, max_episodes=args.max_episodes, use_eef=args.use_eef)
