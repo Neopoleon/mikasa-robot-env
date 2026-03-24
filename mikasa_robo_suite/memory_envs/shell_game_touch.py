@@ -34,7 +34,7 @@ class ShellGameTouchEnv(BaseEnv):
     BALL_RADIUS = 0.02
     MIN_DIST = 0.2
     HEIGHT_OFFSET = 1000
-    TIME_OFFSET = 8
+    TIME_OFFSET = 5
     GOAL_THRESH = 0.08
 
     def __init__(
