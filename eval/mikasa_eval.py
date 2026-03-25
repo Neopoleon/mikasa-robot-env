@@ -34,7 +34,7 @@ from eval_utils import (
 # eval loop
 
 def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, device, seed,
-             output_dir, env_id):
+             output_dir, env_id, no_proprio=False):
     """predict → execute ACTION_HORIZON steps → repeat. save episodes on completion.
     output: <output_dir>/<env_id>/episode_NNNN_{success|failure}/ + summary.json
     """
@@ -45,11 +45,12 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
     buffers = EpisodeBuffers(num_envs)
     metrics = defaultdict(list)
     num_episodes = 0
+    completed = np.zeros(num_envs, dtype=bool)
     step = 0
     pbar = tqdm(total=num_eval_steps, desc="eval")
 
     while step < num_eval_steps:
-        action_chunk = predict_action(obs, policy, normalizer, num_envs, device)
+        action_chunk = predict_action(obs, policy, normalizer, num_envs, device, no_proprio=no_proprio)
 
         for t in range(ACTION_HORIZON):
             if step >= num_eval_steps:
@@ -69,9 +70,14 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
                 num_episodes = handle_episode_completions(
                     infos, buffers, num_envs, num_episodes, task_dir, metrics,
                 )
-                policy.reset()  # clear stale memory history
-                obs, _ = env.reset(seed=seed)
-                break           # discard remaining chunk actions
+                completed |= infos["_final_info"].cpu().numpy()
+                if completed.all():
+                    # all num_envs done — safe to reset policy memory.
+                    # ManiSkill auto-resets done envs, obs is already the
+                    # fresh reset obs for the next round.
+                    policy.reset()
+                    completed[:] = False
+                    break  # discard remaining chunk actions
 
     pbar.close()
 
@@ -89,23 +95,25 @@ def run_eval(env, inner_env, policy, normalizer, num_envs, num_eval_steps, devic
 # replay comparison — feed expert obs from zarr to policy, compare predicted vs expert actions.
 # no env stepping — uses the exact observations the expert saw.
 
-def _zarr_obs_to_policy_input(ep, t, device):
+def _zarr_obs_to_policy_input(ep, t, device, no_proprio=False):
     """construct policy input from zarr episode at timestep t. no env needed.
     zarr keys: third_person_camera (T,256,256,3), robot0_wrist_camera (T,256,256,3), robot0_8d (T,8).
     """
     tp = torch.from_numpy(ep["third_person_camera"][t]).float().div_(255.0).permute(2, 0, 1).unsqueeze(0).unsqueeze(1)
     wc = torch.from_numpy(ep["robot0_wrist_camera"][t]).float().div_(255.0).permute(2, 0, 1).unsqueeze(0).unsqueeze(1)
-    proprio = torch.from_numpy(ep["robot0_8d"][t]).float().unsqueeze(0).unsqueeze(1)
-    return {
+    result = {
         "third_person_camera": tp.to(device),
         "robot0_wrist_camera": wc.to(device),
-        "robot0_8d": proprio.to(device),
         "episode_idx": torch.zeros(1, device=device, dtype=torch.long),
     }
+    if not no_proprio:
+        proprio = torch.from_numpy(ep["robot0_8d"][t]).float().unsqueeze(0).unsqueeze(1)
+        result["robot0_8d"] = proprio.to(device)
+    return result
 
 
 def run_replay(policy, normalizer, device, replay_data_path,
-               replay_episodes, output_dir, env_id, fps=10):
+               replay_episodes, output_dir, env_id, fps=10, no_proprio=False):
     """replay expert episodes offline: feed expert obs to policy, compare predicted vs expert actions.
     no env needed — loads obs directly from zarr (the exact frames the expert saw).
     zarr structure: episode_N/{action0_8d, third_person_camera, robot0_wrist_camera, robot0_8d}.
@@ -134,7 +142,7 @@ def run_replay(policy, normalizer, device, replay_data_path,
 
         for t in range(T):
             with torch.no_grad():
-                policy_input = _zarr_obs_to_policy_input(ep, t, device)
+                policy_input = _zarr_obs_to_policy_input(ep, t, device, no_proprio=no_proprio)
                 policy_input = normalizer.normalize(policy_input)
                 action_dict = policy.predict_action(policy_input)
                 action_dict = normalizer.unnormalize(action_dict)
@@ -207,6 +215,8 @@ def parse_args():
                              "feed expert obs to policy offline, compare predictions per step.")
     parser.add_argument("--replay-episodes", type=int, nargs="+", default=None,
                         help="which episode indices to replay (default: all)")
+    parser.add_argument("--no-proprio", action="store_true",
+                        help="vision-only policy: omit robot0_8d from policy input")
     return parser.parse_args()
 
 
@@ -224,6 +234,7 @@ def main():
             replay_data_path=args.replay_data,
             replay_episodes=args.replay_episodes,
             output_dir=args.output_dir, env_id=args.env_id,
+            no_proprio=args.no_proprio,
         )
     else:
         # normal eval mode
@@ -236,13 +247,13 @@ def main():
         print(f"\nevaluating {args.env_id} | {num_eval_steps} steps | {args.num_envs} envs")
         results = run_eval(
             env, inner_env, policy, normalizer, args.num_envs, num_eval_steps, device, args.seed,
-            output_dir=args.output_dir, env_id=args.env_id,
+            output_dir=args.output_dir, env_id=args.env_id, no_proprio=args.no_proprio,
         )
         env.close()
 
         print(f"\n{'='*50}")
         n = int(results.pop("num_episodes"))
-        print(f"completed {n} episodes in {num_eval_steps * args.num_envs} total steps")
+        print(f"completed {n} episodes in {num_eval_steps} steps ({num_eval_steps * args.num_envs} env transitions across {args.num_envs} envs)")
         for k, v in results.items():
             print(f"  {k}: {v:.4f}")
         print(f"{'='*50}")

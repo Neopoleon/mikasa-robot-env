@@ -15,6 +15,7 @@ import gymnasium as gym
 import imageio
 import numpy as np
 import torch
+import yaml
 
 sys.path.insert(0, "/home/jeff/imitation-learning-policies")
 sys.path.insert(0, "/home/jeff/robot-utils/src")
@@ -100,6 +101,10 @@ def load_policy(checkpoint_path: str, device: torch.device) -> tuple[BasePolicy,
     ckpt = torch.load(checkpoint_path, map_location=device)
 
     cfg = OmegaConf.create(ckpt["cfg_str_unresolved"])
+    # Save config to a yaml file in the same path as the checkpoint
+    with open(checkpoint_path.replace(".ckpt", ".yaml"), "w") as f:
+        yaml.dump(OmegaConf.to_container(cfg), f)
+    print(f"Saved config to: {checkpoint_path.replace('.ckpt', '.yaml')}")
     policy = hydra.utils.instantiate(cfg["workspace"]["model"])
     assert isinstance(policy, BasePolicy)
     policy.load_state_dict(ckpt["model_state_dict"])
@@ -169,30 +174,34 @@ def obs_to_policy_input(
     obs: dict[str, torch.Tensor],
     num_envs: int,
     device: torch.device,
+    no_proprio: bool = False,
 ) -> dict[str, torch.Tensor]:
     """env obs → policy input dict.
     rgb (B,H,W,6): [:3]=third_person, [3:]=wrist → (B,1,3,H,W) float [0,1] each.
     joints (B,25): [7:14]=arm_qpos, [14:15]=gripper_qpos → robot0_8d (B,1,8).
     episode_idx (B,): static arange for MemoryTransformer per-env history tracking.
+    if no_proprio: omit robot0_8d (vision-only policy).
     """
     rgb = obs["rgb"]
     joints = obs["joints"]
 
     third_person = rgb[..., :3].float().div_(255.0).permute(0, 3, 1, 2).unsqueeze(1)
     wrist_cam    = rgb[..., 3:].float().div_(255.0).permute(0, 3, 1, 2).unsqueeze(1)
-    proprio = torch.cat([joints[:, 7:14], joints[:, 14:15]], dim=-1).unsqueeze(1)
 
-    return {
+    result = {
         "third_person_camera": third_person.to(device),
         "robot0_wrist_camera": wrist_cam.to(device),
-        "robot0_8d":           proprio.to(device),
         "episode_idx":         torch.arange(num_envs, device=device),
     }
+    if not no_proprio:
+        proprio = torch.cat([joints[:, 7:14], joints[:, 14:15]], dim=-1).unsqueeze(1)
+        result["robot0_8d"] = proprio.to(device)
+    return result
 
 
 # inference
 
-ACTION_HORIZON = 2  # actions per prediction, matches training chunk size
+ACTION_HORIZON = 1  # actions per prediction, matches training chunk size
 
 
 @torch.no_grad()
@@ -202,9 +211,10 @@ def predict_action(
     normalizer: FixedNormalizer,
     num_envs: int,
     device: torch.device,
+    no_proprio: bool = False,
 ) -> torch.Tensor:
     """obs → normalize → diffusion denoise → unnormalize → action chunk (B, ACTION_HORIZON, 8)."""
-    batch = obs_to_policy_input(obs, num_envs, device)
+    batch = obs_to_policy_input(obs, num_envs, device, no_proprio=no_proprio)
     batch = normalizer.normalize(batch)
     action_dict = policy.predict_action(batch)
     action_dict = normalizer.unnormalize(action_dict)

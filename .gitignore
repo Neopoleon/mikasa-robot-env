@@ -4,6 +4,7 @@
 *.wmv
 
 videos/
+debug
 
 *.py[cod]
 __pycache__/
@@ -63,11 +64,12 @@ download_assets.sh
 keep_going.sh
 upload.ipynb
 
-eval_results/*
+eval*/*
 mikasa_models/*
 test_rollouts/*
 eval_*/*
 new*/*
+replay_data/*
 
 *.tar*
 *.zip
