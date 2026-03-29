@@ -8,7 +8,8 @@ Target zarr structure (per task):
             third_person_camera   (T, 256, 256, 3) uint8
             wrist_camera          (T, 256, 256, 3) uint8
             robot0_8d             (T, 8) float32  — 7 arm qpos + 1 gripper qpos
-            action0_8d            (T, 8) float32  — 7 arm joint deltas + 1 gripper
+            action0_8d            (T, 8) float32  — 7 arm joint deltas + 1 gripper (delta mode)
+                                                    OR absolute target qpos (--abs-joint-pos mode)
         episode_1/
         ...
 
@@ -26,7 +27,7 @@ from tqdm import tqdm
 from pathlib import Path
 
 
-def convert_task(task_dir: str, output_path: str, max_episodes: int = -1, use_eef: bool = False):
+def convert_task(task_dir: str, output_path: str, max_episodes: int = -1, use_eef: bool = False, abs_joint_pos: bool = False):
     npz_files = sorted(Path(task_dir).glob("*.npz"))
     if max_episodes > 0:
         npz_files = npz_files[:max_episodes]
@@ -55,8 +56,14 @@ def convert_task(task_dir: str, output_path: str, max_episodes: int = -1, use_ee
             gripper_qpos = d["joints"][:, 14:15]          # (T, 1)
             robot0_8d = np.concatenate([arm_qpos, gripper_qpos], axis=1).astype(np.float32)  # (T, 8)
 
-        # Action is already 8-dim (7 arm deltas + 1 gripper)
-        action0_8d = d["action"].astype(np.float32)  # (T, 8)
+        # Action: convert to absolute target qpos or keep as delta
+        raw_action = d["action"].astype(np.float32)  # (T, 8)
+        if abs_joint_pos:
+            # abs_target = current_qpos + clip(delta, -1, 1) * 0.1
+            # Reproduces the target the pd_joint_delta_pos controller aimed for
+            action0_8d = robot0_8d + np.clip(raw_action, -1, 1) * 0.1
+        else:
+            action0_8d = raw_action
 
         ep_group = store.create_group(f"episode_{ep_idx}")
         ep_group.create_array("third_person_camera", data=third_person.astype(np.uint8), chunks=(10, 256, 256, 3))
@@ -88,6 +95,8 @@ if __name__ == "__main__":
                         help="Max episodes to convert per task (-1 for all)")
     parser.add_argument("--use-eef", action="store_true",
                         help="Use EEF pose (tcp 3pos+4quat+gripper) instead of joint qpos")
+    parser.add_argument("--abs-joint-pos", action="store_true",
+                        help="Convert delta actions to absolute target qpos (for pd_joint_pos control)")
     args = parser.parse_args()
 
     for task in args.tasks:
@@ -98,4 +107,4 @@ if __name__ == "__main__":
         output_path = os.path.join(args.output_dir, task, "episode_data.zarr")
         os.makedirs(args.output_dir, exist_ok=True)
         print(f"\nConverting {task}...")
-        convert_task(task_dir, output_path, max_episodes=args.max_episodes, use_eef=args.use_eef)
+        convert_task(task_dir, output_path, max_episodes=args.max_episodes, use_eef=args.use_eef, abs_joint_pos=args.abs_joint_pos)
