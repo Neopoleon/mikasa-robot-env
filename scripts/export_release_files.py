@@ -42,7 +42,7 @@ def export_release_files(output_root_dir: str):
     if output_root_dir == ".":
         output_dir = os.path.join(repo_root, "mikasa-robo-env-release")
     else:
-        output_dir = os.path.join(output_root_dir, "mikasa-robo-env-release")
+        output_dir = os.path.join(output_root_dir, "mikasa-robo-env")
 
     # Clean and recreate output directory
     if os.path.exists(output_dir):
