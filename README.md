@@ -44,7 +44,7 @@ bash shell_scripts/serve_mikasa_env.sh [GPU_ID] [PORT]
 python scripts/serve_mikasa_checkpoints.py
 ```
 
-> **Note:** Default policy server address is `tcp://localhost:18765`. Override with `--policy-server` (env server) or `--port` (orchestrator).
+> **Note:** The env server defaults to **GPU 1** and port `18765`. On a single-GPU machine, pass `0` explicitly: `bash shell_scripts/serve_mikasa_env.sh 0`. Override the policy server address with `--policy-server` (env server) or `--port` (orchestrator).
 
 ## Camera Resolution
 
